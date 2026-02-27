@@ -41,7 +41,7 @@
   const statCountries = document.getElementById("statCountries");
   const statMonths = document.getElementById("statMonths");
 
-  let currentGid = tabBtns[0].dataset.gid;
+  let currentSheet = tabBtns[0].dataset.sheet;
   let headers = [];
   let rows = [];
   let filtered = [];
@@ -109,9 +109,9 @@
   }
 
   // ---- Fetch Data from Google Sheets ----
-  async function fetchSheetData(gid = currentGid) {
+  async function fetchSheetData(sheet = currentSheet) {
     setSyncState("syncing");
-    const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&gid=${gid}`;
+    const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheet)}`;
 
     try {
       const response = await fetch(url);
@@ -492,24 +492,24 @@
       btn.classList.add("active");
       
       // Update State
-      currentGid = btn.dataset.gid;
+      currentSheet = btn.dataset.sheet;
       
       // Reset filters and views
       activeFilter = null;
       searchInput.value = "";
       
       showLoading();
-      fetchSheetData(currentGid);
+      fetchSheetData(currentSheet);
     });
   });
 
   // Refresh button
-  btnRefresh.addEventListener("click", () => fetchSheetData(currentGid));
+  btnRefresh.addEventListener("click", () => fetchSheetData(currentSheet));
 
   // Retry button
   btnRetry.addEventListener("click", () => {
     showLoading();
-    fetchSheetData(currentGid);
+    fetchSheetData(currentSheet);
   });
 
   // Search
@@ -567,12 +567,12 @@
   function startAutoRefresh() {
     if (refreshTimer) clearInterval(refreshTimer);
     refreshTimer = setInterval(() => {
-      fetchSheetData(currentGid);
+      fetchSheetData(currentSheet);
     }, REFRESH_INTERVAL_MS);
   }
 
   // ---- Init ----
   showLoading();
-  fetchSheetData(currentGid).then(() => startAutoRefresh());
+  fetchSheetData(currentSheet).then(() => startAutoRefresh());
 
 })();
