@@ -56,7 +56,7 @@
   let headers = [];
   let rows = [];
   let filtered = [];
-  let sortCol = -1;
+  let sortCol = -2; // -2 = No Sort, -1 = Status, 0 = Date, etc.
   let sortAsc = true;
   let currentView = "cards";
   let activeFilter = null;
@@ -388,8 +388,9 @@
     const displayHeaders = ["Status", "Date", "Event Name", "Location", "Link"];
     tableHead.innerHTML = `<tr>${displayHeaders.map((h, i) => {
       let cls = "";
-      if (i > 0 && i - 1 === sortCol) cls = sortAsc ? "sorted-asc" : "sorted-desc";
-      return `<th class="${cls}" data-col="${i - 1}">${escHtml(h)}</th>`;
+      if (i < 4 && i - 1 === sortCol) cls = sortAsc ? "sorted-asc" : "sorted-desc";
+      const sortVal = i - 1;
+      return `<th class="${cls}" data-col="${sortVal}">${escHtml(h)}${i < 4 ? '' : ''}</th>`;
     }).join("")}</tr>`;
 
     tableBody.innerHTML = "";
@@ -561,11 +562,10 @@
   // ---- Build Sort Options ----
   function buildSortOptions() {
     sortSelect.innerHTML = `<option value="">—</option>`;
-    const displayHeaders = ["Date", "Event Name", "Location", "Link"];
+    const displayHeaders = ["Status", "Date", "Event Name", "Location"];
     displayHeaders.forEach((h, i) => {
-      if (i === 3) return; // Don't sort by link
       const opt = document.createElement("option");
-      opt.value = i;
+      opt.value = i - 1; // Status is -1, Date is 0, etc.
       opt.textContent = h;
       sortSelect.appendChild(opt);
     });
@@ -589,8 +589,21 @@
     });
 
     // Sort
-    if (sortCol >= 0) {
+    if (sortCol >= -1) {
+      const statusOrder = { "tobe": 1, "applied": 2, "none": 3 };
       filtered.sort((a, b) => {
+        if (sortCol === -1) {
+          // Status sort
+          const idA = `${a[1]}|${a[0]}|${a[2]}`;
+          const idB = `${b[1]}|${b[0]}|${b[2]}`;
+          const sa = statusOrder[eventStatus[idA] || "none"];
+          const sb = statusOrder[eventStatus[idB] || "none"];
+          if (sa !== sb) return sortAsc ? sa - sb : sb - sa;
+          // Fallback to date
+          const da = parseDateString(a[0]);
+          const db = parseDateString(b[0]);
+          return (da || 0) - (db || 0);
+        }
         if (sortCol === 0) {
           // Date sort
           const da = parseDateString(a[0]);
@@ -657,7 +670,7 @@
   // Sort select
   sortSelect.addEventListener("change", () => {
     const v = sortSelect.value;
-    sortCol = v === "" ? -1 : parseInt(v, 10);
+    sortCol = v === "" ? -2 : parseInt(v, 10);
     applyFilters();
   });
 
