@@ -21,6 +21,17 @@
   const rowCount = document.getElementById("rowCount");
   const dataOutput = document.getElementById("dataOutput");
   const cardsGrid = document.getElementById("cardsGrid");
+  
+  // Shortlist stuff
+  const shortlistSection = document.getElementById("shortlistSection");
+  const gridApplied = document.getElementById("gridApplied");
+  const gridToBeApplied = document.getElementById("gridToBeApplied");
+  const countApplied = document.getElementById("countApplied");
+  const countToBeApplied = document.getElementById("countToBeApplied");
+  const emptyApplied = document.getElementById("emptyApplied");
+  const emptyToBeApplied = document.getElementById("emptyToBeApplied");
+  const btnClearShortlist = document.getElementById("btnClearShortlist");
+
   const tableHead = document.getElementById("tableHead");
   const tableBody = document.getElementById("tableBody");
   const emptyState = document.getElementById("emptyState");
@@ -50,6 +61,8 @@
   let currentView = "cards";
   let activeFilter = null;
   let refreshTimer = null;
+  // Status Map: id -> "applied" | "tobe" | "none"
+  let eventStatus = JSON.parse(localStorage.getItem("eventStatus") || "{}");
 
   // Month short names for filter chips
   const MONTH_NAMES = [
@@ -305,26 +318,41 @@
 
     const frag = document.createDocumentFragment();
     data.forEach((row, ri) => {
-      const card = document.createElement("div");
-      card.className = "data-card";
-      card.style.animationDelay = `${Math.min(ri * 35, 600)}ms`;
+      const card = createCardElement(row, ri);
+      frag.appendChild(card);
+    });
+    cardsGrid.appendChild(frag);
+  }
 
-      const date = (row[0] || "").trim();
-      const eventName = (row[1] || "").trim();
-      const location = (row[2] || "").trim();
-      const link = (row[3] || "").trim();
-      const month = getMonthFromDate(date);
-      const color = getMonthColor(month);
+  function createCardElement(row, ri, isShortlist = false) {
+    const card = document.createElement("div");
+    const date = (row[0] || "").trim();
+    const eventName = (row[1] || "").trim();
+    const location = (row[2] || "").trim();
+    const link = (row[3] || "").trim();
+    const rowId = `${eventName}|${date}|${location}`;
+    const status = eventStatus[rowId] || "none";
 
-      let html = `
+    card.className = "data-card status-" + status;
+    card.style.animationDelay = `${Math.min(ri * 35, 600)}ms`;
+
+    const month = getMonthFromDate(date);
+    const color = getMonthColor(month);
+
+    let html = `
         <div class="card-accent-bar" style="background: linear-gradient(90deg, ${color}, ${color}88);"></div>
+        <div class="status-toggle" data-id="${escHtml(rowId)}">
+          <div class="status-opt ${status === 'applied' ? 'active' : ''}" data-status="applied" title="Applied">A</div>
+          <div class="status-opt ${status === 'tobe' ? 'active' : ''}" data-status="tobe" title="To Be Applied">T</div>
+          <div class="status-opt ${status === 'none' ? 'active' : ''}" data-status="none" title="Not Applied">N</div>
+        </div>
         <div class="card-body">
           <div class="card-date-badge" style="background: ${color}18; color: ${color};">
             <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
               <rect x="2" y="3" width="12" height="11" rx="2" stroke="currentColor" stroke-width="1.5"/>
               <line x1="5" y1="1" x2="5" y2="5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
               <line x1="11" y1="1" x2="11" y2="5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-              <line x1="2" y1="7" x2="14" y2="7" stroke="currentColor" stroke-width="1.5"/>
+              <rect x="2" y="7" width="12" height="1" fill="currentColor"/>
             </svg>
             ${escHtml(date)}
           </div>
@@ -345,37 +373,148 @@
           </a>` : ""}
         </div>`;
 
-      card.innerHTML = html;
-      frag.appendChild(card);
+    card.innerHTML = html;
+
+    // Attach listeners
+    card.querySelectorAll(".status-opt").forEach(opt => {
+      opt.addEventListener("click", () => setStatus(rowId, row, opt.dataset.status));
     });
-    cardsGrid.appendChild(frag);
+
+    return card;
   }
 
   // ---- Render Table ----
   function renderTable(data) {
-    const displayHeaders = ["Date", "Event Name", "Location", "Link"];
+    const displayHeaders = ["Status", "Date", "Event Name", "Location", "Link"];
     tableHead.innerHTML = `<tr>${displayHeaders.map((h, i) => {
       let cls = "";
-      if (i === sortCol) cls = sortAsc ? "sorted-asc" : "sorted-desc";
-      return `<th class="${cls}" data-col="${i}">${escHtml(h)}</th>`;
+      if (i > 0 && i - 1 === sortCol) cls = sortAsc ? "sorted-asc" : "sorted-desc";
+      return `<th class="${cls}" data-col="${i - 1}">${escHtml(h)}</th>`;
     }).join("")}</tr>`;
 
     tableBody.innerHTML = "";
     const frag = document.createDocumentFragment();
     data.forEach((row, ri) => {
+      const date = (row[0] || "").trim();
+      const eventName = (row[1] || "").trim();
+      const location = (row[2] || "").trim();
+      const rowId = `${eventName}|${date}|${location}`;
+      const status = eventStatus[rowId] || "none";
+
       const tr = document.createElement("tr");
+      if (status !== 'none') tr.classList.add("status-" + status);
       tr.style.animationDelay = `${Math.min(ri * 20, 400)}ms`;
-      tr.innerHTML = row.map((cell, ci) => {
+
+      let cells = [
+        `<td class="table-status-cell">
+           <div class="table-toggle">
+            <div class="status-opt ${status === 'applied' ? 'active' : ''}" data-status="applied">A</div>
+            <div class="status-opt ${status === 'tobe' ? 'active' : ''}" data-status="tobe">T</div>
+            <div class="status-opt ${status === 'none' ? 'active' : ''}" data-status="none">N</div>
+           </div>
+         </td>`
+      ];
+
+      row.forEach((cell, ci) => {
         if (ci === 3 && cell) {
-          // Link column
-          return `<td><a href="${escHtml(cell)}" target="_blank" rel="noopener">View →</a></td>`;
+          cells.push(`<td><a href="${escHtml(cell)}" target="_blank" rel="noopener">View →</a></td>`);
+        } else {
+          cells.push(`<td>${escHtml(cell || "—")}</td>`);
         }
-        return `<td>${escHtml(cell || "—")}</td>`;
-      }).join("");
+      });
+
+      tr.innerHTML = cells.join("");
+
+      tr.querySelectorAll(".status-opt").forEach(opt => {
+        opt.addEventListener("click", () => setStatus(rowId, row, opt.dataset.status));
+      });
+
       frag.appendChild(tr);
     });
     tableBody.appendChild(frag);
   }
+
+  // ---- Status Management ----
+  function setStatus(id, rowData, status) {
+    eventStatus[id] = status;
+    
+    // Save to localStorage
+    localStorage.setItem("eventStatus", JSON.stringify(eventStatus));
+    
+    if (status !== "none") {
+      saveRowData(id, rowData);
+    } else {
+      delete eventStatus[id];
+      localStorage.setItem("eventStatus", JSON.stringify(eventStatus));
+      removeRowData(id);
+    }
+    
+    render(); 
+    updateShortlist();
+  }
+
+  function saveRowData(id, row) {
+    const data = JSON.parse(localStorage.getItem("shortlistDataMap") || "{}");
+    data[id] = row;
+    localStorage.setItem("shortlistDataMap", JSON.stringify(data));
+  }
+
+  function removeRowData(id) {
+    const data = JSON.parse(localStorage.getItem("shortlistDataMap") || "{}");
+    delete data[id];
+    localStorage.setItem("shortlistDataMap", JSON.stringify(data));
+  }
+
+  function updateShortlist() {
+    const dataMap = JSON.parse(localStorage.getItem("shortlistDataMap") || "{}");
+    
+    const applied = [];
+    const tobe = [];
+    
+    Object.keys(eventStatus).forEach(id => {
+      const s = eventStatus[id];
+      if (s === "applied") applied.push(id);
+      if (s === "tobe") tobe.push(id);
+    });
+    
+    shortlistSection.classList.remove("hidden");
+    countApplied.textContent = applied.length;
+    countToBeApplied.textContent = tobe.length;
+    
+    // Render Applied
+    gridApplied.innerHTML = "";
+    if (applied.length === 0) {
+      emptyApplied.classList.remove("hidden");
+    } else {
+      emptyApplied.classList.add("hidden");
+      applied.forEach((id, ri) => {
+        const row = dataMap[id];
+        if (row) gridApplied.appendChild(createCardElement(row, ri, true));
+      });
+    }
+
+    // Render ToBe
+    gridToBeApplied.innerHTML = "";
+    if (tobe.length === 0) {
+      emptyToBeApplied.classList.remove("hidden");
+    } else {
+      emptyToBeApplied.classList.add("hidden");
+      tobe.forEach((id, ri) => {
+        const row = dataMap[id];
+        if (row) gridToBeApplied.appendChild(createCardElement(row, ri, true));
+      });
+    }
+  }
+
+  btnClearShortlist.addEventListener("click", () => {
+    if (confirm("Reset all status progress?")) {
+      eventStatus = {};
+      localStorage.setItem("eventStatus", "{}");
+      localStorage.setItem("shortlistDataMap", "{}");
+      render();
+      updateShortlist();
+    }
+  });
 
   // ---- Build Month Filter Chips ----
   function buildFilters() {
@@ -573,6 +712,9 @@
 
   // ---- Init ----
   showLoading();
-  fetchSheetData(currentSheet).then(() => startAutoRefresh());
+  fetchSheetData(currentSheet).then(() => {
+    startAutoRefresh();
+    updateShortlist();
+  });
 
 })();
