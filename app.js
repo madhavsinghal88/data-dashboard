@@ -1,16 +1,18 @@
 /* ============================================================
-   DATA DASHBOARD — App Engine
-   Parses pasted Excel / CSV / TSV data → renders cards + table
+   SAP EVENTS DASHBOARD — Live Google Sheets Integration
+   Fetches data via Google Visualization API, auto-refreshes
    ============================================================ */
 
 (() => {
   "use strict";
 
+  // ---- Configuration ----
+  const SHEET_ID = "1ZqRy6ualEQZ9EN3tgNVE-Dx5ad2alD3KQkoqJ35cdCU";
+  const REFRESH_INTERVAL_MS = 60_000; // 60 seconds
+  
   // ---- DOM refs ----
-  const dataInput = document.getElementById("dataInput");
-  const btnParse = document.getElementById("btnParse");
-  const btnClear = document.getElementById("btnClear");
-  const btnSample = document.getElementById("btnSample");
+  const groupTabs = document.getElementById("groupTabs");
+  const tabBtns = document.querySelectorAll(".tab-btn");
   const controlsBar = document.getElementById("controlsBar");
   const searchInput = document.getElementById("searchInput");
   const filterGroup = document.getElementById("filterGroup");
@@ -22,178 +24,271 @@
   const tableHead = document.getElementById("tableHead");
   const tableBody = document.getElementById("tableBody");
   const emptyState = document.getElementById("emptyState");
-  const inputArea = document.getElementById("inputArea");
   const btnCards = document.getElementById("btnCards");
   const btnTable = document.getElementById("btnTable");
-  const btnChangeData = document.getElementById("btnChangeData");
+  const btnRefresh = document.getElementById("btnRefresh");
+  const btnRetry = document.getElementById("btnRetry");
+  const syncIndicator = document.getElementById("syncIndicator");
+  const loadingState = document.getElementById("loadingState");
+  const errorState = document.getElementById("errorState");
+  const statsBar = document.getElementById("statsBar");
+  const dashboardFooter = document.getElementById("dashboardFooter");
+  const lastSyncEl = document.getElementById("lastSync");
 
-  // ---- State ----
+  // Stats
+  const statTotal = document.getElementById("statTotal");
+  const statUpcoming = document.getElementById("statUpcoming");
+  const statCountries = document.getElementById("statCountries");
+  const statMonths = document.getElementById("statMonths");
+
+  let currentGid = tabBtns[0].dataset.gid;
   let headers = [];
-  let rows = [];        // original parsed rows (array of arrays)
-  let filtered = [];        // currently visible rows
+  let rows = [];
+  let filtered = [];
   let sortCol = -1;
   let sortAsc = true;
-  let currentView = "cards";   // "cards" | "table"
-  let activeFilter = null;     // { colIndex, value } or null
-  let tagColorMap = {};       // globalValue -> colorIndex
-  let tagColorCounter = 0;
+  let currentView = "cards";
+  let activeFilter = null;
+  let refreshTimer = null;
 
-  // Columns whose values look like comma-separated tags
-  let tagColumns = new Set();
-  // Columns whose values look like a status keyword
-  let statusColumns = new Set();
+  // Month short names for filter chips
+  const MONTH_NAMES = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+  ];
 
-  const STATUS_KEYWORDS = new Set([
-    "active", "inactive", "pending", "hired", "interviewing",
-    "rejected", "completed", "open", "closed", "yes", "no",
-    "approved", "declined", "in progress", "on hold"
-  ]);
+  const MONTH_COLORS = {
+    "Jan": "#67e8f9", "Feb": "#f472b6", "Mar": "#a78bfa",
+    "Apr": "#60a5fa", "May": "#34d399", "Jun": "#fbbf24",
+    "Jul": "#fb923c", "Aug": "#f87171", "Sep": "#e879f9",
+    "Oct": "#2dd4bf", "Nov": "#94a3b8", "Dec": "#818cf8"
+  };
 
-  const TAG_COLOR_COUNT = 8;
+  // ---- CSV Parser ----
+  function parseCSV(text) {
+    const rows = [];
+    let current = [];
+    let cell = "";
+    let inQuotes = false;
 
-  // ---- Sample Data ----
-  const SAMPLE = `Name\tCompany\tRole\tSkills\tStatus\tLocation
-Aarav Sharma\tGoogle\tSDE-III\tPython, ML, Kubernetes\tActive\tBangalore
-Priya Mehta\tMcKinsey\tConsultant\tStrategy, Data Analytics\tInterviewing\tMumbai
-Rahul Verma\tRazorpay\tProduct Manager\tProduct, SQL, Agile\tHired\tDelhi
-Sneha Iyer\tMicrosoft\tML Engineer\tPyTorch, NLP, AWS\tActive\tHyderabad
-Karan Singh\tFlipkart\tSDE-II\tJava, Spring, Redis\tPending\tBangalore
-Ananya Reddy\tDeloitte\tAnalyst\tExcel, Power BI, SQL\tActive\tChennai
-Vikram Joshi\tAmazon\tSDE-I\tJavaScript, React, Node.js\tInterviewing\tPune
-Meera Nair\tBCG\tSenior Associate\tStrategy, M&A, Valuation\tHired\tMumbai
-Arjun Kapoor\tUber\tBackend Engineer\tGo, gRPC, Postgres\tActive\tBangalore
-Divya Gupta\tGoldman Sachs\tVP\tRisk, Python, Quant\tActive\tMumbai
-Rohan Patel\tZerodha\tFull Stack Dev\tReact, Django, Docker\tPending\tBangalore
-Ishita Das\tMeta\tResearch Scientist\tComputer Vision, PyTorch\tInterviewing\tRemote`;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      const next = text[i + 1];
 
-  // ---- Detect delimiter ----
-  function detectDelimiter(text) {
-    const lines = text.trim().split(/\r?\n/).slice(0, 5);
-    if (!lines.length) return "\t";
-
-    // Check pipe first (common in user prompt example)
-    const pipeCount = lines.reduce((s, l) => s + (l.split("|").length - 1), 0);
-    const tabCount = lines.reduce((s, l) => s + (l.split("\t").length - 1), 0);
-    const commaCount = lines.reduce((s, l) => s + (l.split(",").length - 1), 0);
-
-    const avg = lines.length;
-    if (tabCount / avg >= 1) return "\t";
-    if (pipeCount / avg >= 1) return "|";
-    if (commaCount / avg >= 1) return ",";
-    return "\t";
-  }
-
-  // ---- Parse Input ----
-  function parseInput(text) {
-    const raw = text.trim();
-    if (!raw) return { headers: [], rows: [] };
-
-    const delim = detectDelimiter(raw);
-    let lines = raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-
-    // Remove separator lines like "---" or "---|---"
-    lines = lines.filter(l => !/^[-|\s:]+$/.test(l));
-
-    if (lines.length < 2) return { headers: [], rows: [] };
-
-    const splitLine = line =>
-      line.split(delim).map(c => c.trim()).filter((_, i, a) => !(delim === "|" && (i === 0 || i === a.length) && _ === ""));
-
-    // For pipe-delimited, remove surrounding empty cells
-    const splitPipe = line => {
-      let parts = line.split("|").map(c => c.trim());
-      if (parts[0] === "") parts = parts.slice(1);
-      if (parts[parts.length - 1] === "") parts = parts.slice(0, -1);
-      return parts;
-    };
-
-    const splitter = delim === "|" ? splitPipe : splitLine;
-
-    const h = splitter(lines[0]);
-    const r = lines.slice(1).map(l => {
-      const cells = splitter(l);
-      // Normalize row length to match headers
-      while (cells.length < h.length) cells.push("");
-      return cells.slice(0, h.length);
-    });
-
-    return { headers: h, rows: r };
-  }
-
-  // ---- Analyse columns for tag / status heuristics ----
-  function analyseColumns(h, r) {
-    tagColumns = new Set();
-    statusColumns = new Set();
-    tagColorMap = {};
-    tagColorCounter = 0;
-
-    h.forEach((_, ci) => {
-      const vals = r.map(row => (row[ci] || "").trim().toLowerCase());
-
-      // Check status
-      const statusLike = vals.filter(v => STATUS_KEYWORDS.has(v));
-      if (statusLike.length > vals.length * 0.4 && vals.length > 0) {
-        statusColumns.add(ci);
-        return;
+      if (inQuotes) {
+        if (ch === '"' && next === '"') {
+          cell += '"';
+          i++; // skip escaped quote
+        } else if (ch === '"') {
+          inQuotes = false;
+        } else {
+          cell += ch;
+        }
+      } else {
+        if (ch === '"') {
+          inQuotes = true;
+        } else if (ch === ',') {
+          current.push(cell.trim());
+          cell = "";
+        } else if (ch === '\n' || (ch === '\r' && next === '\n')) {
+          current.push(cell.trim());
+          if (current.some(c => c !== "")) rows.push(current);
+          current = [];
+          cell = "";
+          if (ch === '\r') i++; // skip \n after \r
+        } else {
+          cell += ch;
+        }
       }
-
-      // Check if it contains comma-separated tokens (tags)
-      const hasCommas = vals.filter(v => v.includes(","));
-      if (hasCommas.length > vals.length * 0.3 && vals.length > 0) {
-        tagColumns.add(ci);
-      }
-    });
-
-    // Also treat columns named "skills", "tags", "tech", "stack", "technologies" as tag columns
-    const TAG_NAMES = ["skills", "tags", "tech", "stack", "technologies", "tools", "keywords"];
-    h.forEach((name, ci) => {
-      if (TAG_NAMES.includes(name.trim().toLowerCase())) tagColumns.add(ci);
-    });
-
-    const STATUS_NAMES = ["status", "state", "stage", "result"];
-    h.forEach((name, ci) => {
-      if (STATUS_NAMES.includes(name.trim().toLowerCase())) statusColumns.add(ci);
-    });
-  }
-
-  // ---- Tag color assignment ----
-  function getTagColor(value) {
-    const key = value.trim().toLowerCase();
-    if (!(key in tagColorMap)) {
-      tagColorMap[key] = (tagColorCounter % TAG_COLOR_COUNT) + 1;
-      tagColorCounter++;
     }
-    return tagColorMap[key];
+    // Last cell
+    current.push(cell.trim());
+    if (current.some(c => c !== "")) rows.push(current);
+
+    return rows;
   }
 
-  // ---- Render Tags ----
-  function renderTags(value) {
-    const tags = value.split(",").map(t => t.trim()).filter(Boolean);
-    return tags.map(t => {
-      const c = getTagColor(t);
-      return `<span class="tag tag-${c}">${escHtml(t)}</span>`;
-    }).join("");
+  // ---- Fetch Data from Google Sheets ----
+  async function fetchSheetData(gid = currentGid) {
+    setSyncState("syncing");
+    const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&gid=${gid}`;
+
+    try {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const text = await response.text();
+
+      const allRows = parseCSV(text);
+      if (allRows.length < 2) throw new Error("Sheet appears empty");
+
+      headers = allRows[0];
+      rows = allRows.slice(1);
+
+      // Deduplicate rows based on Event Name + Date + Location
+      const seen = new Set();
+      rows = rows.filter(row => {
+        const key = `${(row[0]||"").trim()}|${(row[1]||"").trim()}|${(row[2]||"").trim()}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+
+      // Normalize row lengths
+      rows = rows.map(r => {
+        while (r.length < headers.length) r.push("");
+        return r.slice(0, headers.length);
+      });
+
+      sortCol = -1;
+      sortAsc = true;
+      filtered = [...rows];
+
+      showDashboard();
+      buildSortOptions();
+      buildFilters();
+      updateStats();
+      applyFilters();
+
+      setSyncState("synced");
+      updateLastSync();
+
+    } catch (err) {
+      console.error("Fetch error:", err);
+      if (rows.length > 0) {
+        // We have previous data — just show error indicator
+        setSyncState("error");
+      } else {
+        // No data at all — show error state
+        showError(err.message);
+      }
+    }
   }
 
-  // ---- Render Status ----
-  function renderStatus(value) {
-    const v = value.trim();
-    const key = v.toLowerCase().replace(/\s+/g, "");
-    let cls = "status-default";
-    if (["active", "completed", "yes", "approved", "hired"].includes(key)) cls = "status-active";
-    else if (["interviewing", "inprogress", "open"].includes(key)) cls = "status-interviewing";
-    else if (["pending", "onhold"].includes(key)) cls = "status-pending";
-    else if (["inactive", "closed", "no"].includes(key)) cls = "status-inactive";
-    else if (["rejected", "declined"].includes(key)) cls = "status-rejected";
-    return `<span class="status-badge ${cls}"><span class="status-dot"></span>${escHtml(v)}</span>`;
+  // ---- UI State Management ----
+  function showLoading() {
+    loadingState.classList.remove("hidden");
+    errorState.classList.add("hidden");
+    controlsBar.classList.add("hidden");
+    dataOutput.classList.add("hidden");
+    statsBar.classList.add("hidden");
+    dashboardFooter.classList.add("hidden");
+    emptyState.classList.add("hidden");
   }
 
-  // ---- Render cell value (auto-detect) ----
-  function renderCellValue(value, colIndex) {
-    if (!value) return `<span class="card-field-value">—</span>`;
-    if (statusColumns.has(colIndex)) return renderStatus(value);
-    if (tagColumns.has(colIndex)) return `<span class="tags-container">${renderTags(value)}</span>`;
-    return `<span class="card-field-value">${escHtml(value)}</span>`;
+  function showError(msg) {
+    loadingState.classList.add("hidden");
+    errorState.classList.remove("hidden");
+    controlsBar.classList.add("hidden");
+    dataOutput.classList.add("hidden");
+    statsBar.classList.add("hidden");
+    dashboardFooter.classList.add("hidden");
+    if (msg) document.getElementById("errorMessage").textContent = msg;
+    setSyncState("error");
+  }
+
+  function showDashboard() {
+    loadingState.classList.add("hidden");
+    errorState.classList.add("hidden");
+    controlsBar.classList.remove("hidden");
+    dataOutput.classList.remove("hidden");
+    statsBar.classList.remove("hidden");
+    dashboardFooter.classList.remove("hidden");
+  }
+
+  function setSyncState(state) {
+    syncIndicator.className = "sync-indicator";
+    const dot = syncIndicator.querySelector(".sync-dot");
+    const text = syncIndicator.querySelector(".sync-text");
+
+    if (state === "syncing") {
+      syncIndicator.classList.add("syncing");
+      text.textContent = "Syncing…";
+      btnRefresh.classList.add("spinning");
+    } else if (state === "error") {
+      syncIndicator.classList.add("error");
+      text.textContent = "Sync Error";
+      btnRefresh.classList.remove("spinning");
+    } else {
+      text.textContent = "Synced";
+      btnRefresh.classList.remove("spinning");
+    }
+  }
+
+  function updateLastSync() {
+    const now = new Date();
+    lastSyncEl.textContent = now.toLocaleTimeString([], {
+      hour: "2-digit", minute: "2-digit", second: "2-digit"
+    });
+  }
+
+  // ---- Stats ----
+  function updateStats() {
+    statTotal.textContent = rows.length;
+
+    // Upcoming: events with dates in the future
+    const now = new Date();
+    let upcoming = 0;
+    const countriesSet = new Set();
+    const monthsSet = new Set();
+
+    rows.forEach(row => {
+      const dateStr = (row[0] || "").trim();
+      const location = (row[2] || "").trim();
+      const parsedDate = parseDateString(dateStr);
+
+      if (parsedDate && parsedDate >= now) upcoming++;
+
+      // Extract country (last part of location)
+      if (location) {
+        const parts = location.split(",").map(s => s.trim());
+        const country = parts[parts.length - 1];
+        if (country) countriesSet.add(country);
+      }
+
+      // Extract month
+      const monthMatch = dateStr.match(/\b(January|February|March|April|May|June|July|August|September|October|November|December)\b/i);
+      if (monthMatch) monthsSet.add(monthMatch[1]);
+    });
+
+    statUpcoming.textContent = upcoming;
+    statCountries.textContent = countriesSet.size;
+    statMonths.textContent = monthsSet.size;
+
+    // Animate stat numbers
+    document.querySelectorAll(".stat-number").forEach(el => {
+      el.style.animation = "none";
+      el.offsetHeight;
+      el.style.animation = "fadeSlideUp 0.5s ease forwards";
+    });
+  }
+
+  // ---- Date Parsing ----
+  function parseDateString(dateStr) {
+    if (!dateStr) return null;
+    // Handle ranges like "2–3 March, 2026" → use first date
+    const cleaned = dateStr.replace(/\d+\s*[–-]\s*/, "");
+    // Also handle "2–3 March, 2026" → "2 March, 2026"
+    const singleDate = dateStr.replace(/(\d+)\s*[–-]\s*\d+/, "$1");
+    const d = new Date(singleDate);
+    if (!isNaN(d.getTime())) return d;
+    const d2 = new Date(cleaned);
+    if (!isNaN(d2.getTime())) return d2;
+    return null;
+  }
+
+  function getMonthFromDate(dateStr) {
+    if (!dateStr) return "";
+    const match = dateStr.match(/\b(January|February|March|April|May|June|July|August|September|October|November|December)\b/i);
+    if (match) {
+      const full = match[1];
+      const idx = new Date(full + " 1, 2026").getMonth();
+      return MONTH_NAMES[idx];
+    }
+    return "";
+  }
+
+  function getMonthColor(month) {
+    return MONTH_COLORS[month] || "#6366f1";
   }
 
   // ---- HTML escape ----
@@ -212,19 +307,44 @@ Ishita Das\tMeta\tResearch Scientist\tComputer Vision, PyTorch\tInterviewing\tRe
     data.forEach((row, ri) => {
       const card = document.createElement("div");
       card.className = "data-card";
-      card.style.animationDelay = `${Math.min(ri * 40, 600)}ms`;
+      card.style.animationDelay = `${Math.min(ri * 35, 600)}ms`;
 
-      // First column = title
-      let html = `<div class="card-title">${escHtml(row[0] || "—")}</div><div class="card-fields">`;
+      const date = (row[0] || "").trim();
+      const eventName = (row[1] || "").trim();
+      const location = (row[2] || "").trim();
+      const link = (row[3] || "").trim();
+      const month = getMonthFromDate(date);
+      const color = getMonthColor(month);
 
-      for (let ci = 1; ci < headers.length; ci++) {
-        html += `
-          <div class="card-field">
-            <span class="card-field-label">${escHtml(headers[ci])}</span>
-            ${renderCellValue(row[ci], ci)}
-          </div>`;
-      }
-      html += `</div>`;
+      let html = `
+        <div class="card-accent-bar" style="background: linear-gradient(90deg, ${color}, ${color}88);"></div>
+        <div class="card-body">
+          <div class="card-date-badge" style="background: ${color}18; color: ${color};">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+              <rect x="2" y="3" width="12" height="11" rx="2" stroke="currentColor" stroke-width="1.5"/>
+              <line x1="5" y1="1" x2="5" y2="5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              <line x1="11" y1="1" x2="11" y2="5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              <line x1="2" y1="7" x2="14" y2="7" stroke="currentColor" stroke-width="1.5"/>
+            </svg>
+            ${escHtml(date)}
+          </div>
+          <div class="card-title">${escHtml(eventName)}</div>
+          <div class="card-location">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+              <path d="M8 1C5.24 1 3 3.24 3 6c0 3.75 5 9 5 9s5-5.25 5-9c0-2.76-2.24-5-5-5z" stroke="currentColor" stroke-width="1.3" fill="none"/>
+              <circle cx="8" cy="6" r="1.5" stroke="currentColor" stroke-width="1.3" fill="none"/>
+            </svg>
+            <span>${escHtml(location || "—")}</span>
+          </div>
+          ${link ? `<a class="card-link" href="${escHtml(link)}" target="_blank" rel="noopener">
+            View Event
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+              <path d="M6 3h7v7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M13 3L6 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+          </a>` : ""}
+        </div>`;
+
       card.innerHTML = html;
       frag.appendChild(card);
     });
@@ -233,22 +353,23 @@ Ishita Das\tMeta\tResearch Scientist\tComputer Vision, PyTorch\tInterviewing\tRe
 
   // ---- Render Table ----
   function renderTable(data) {
-    // Head
-    tableHead.innerHTML = `<tr>${headers.map((h, i) => {
+    const displayHeaders = ["Date", "Event Name", "Location", "Link"];
+    tableHead.innerHTML = `<tr>${displayHeaders.map((h, i) => {
       let cls = "";
       if (i === sortCol) cls = sortAsc ? "sorted-asc" : "sorted-desc";
       return `<th class="${cls}" data-col="${i}">${escHtml(h)}</th>`;
     }).join("")}</tr>`;
 
-    // Body
     tableBody.innerHTML = "";
     const frag = document.createDocumentFragment();
     data.forEach((row, ri) => {
       const tr = document.createElement("tr");
-      tr.style.animationDelay = `${Math.min(ri * 25, 500)}ms`;
+      tr.style.animationDelay = `${Math.min(ri * 20, 400)}ms`;
       tr.innerHTML = row.map((cell, ci) => {
-        if (statusColumns.has(ci)) return `<td>${renderStatus(cell)}</td>`;
-        if (tagColumns.has(ci)) return `<td><span class="tags-container">${renderTags(cell)}</span></td>`;
+        if (ci === 3 && cell) {
+          // Link column
+          return `<td><a href="${escHtml(cell)}" target="_blank" rel="noopener">View →</a></td>`;
+        }
         return `<td>${escHtml(cell || "—")}</td>`;
       }).join("");
       frag.appendChild(tr);
@@ -256,30 +377,15 @@ Ishita Das\tMeta\tResearch Scientist\tComputer Vision, PyTorch\tInterviewing\tRe
     tableBody.appendChild(frag);
   }
 
-  // ---- Build Filter Chips ----
+  // ---- Build Month Filter Chips ----
   function buildFilters() {
     filterGroup.innerHTML = "";
 
-    // Find a good column for filters (status column first, then small-cardinality columns)
-    let filterCol = -1;
-    for (const ci of statusColumns) { filterCol = ci; break; }
-
-    if (filterCol === -1) {
-      // Pick first column with ≤ 10 unique values (excluding first column = name)
-      for (let ci = 1; ci < headers.length; ci++) {
-        if (tagColumns.has(ci)) continue;
-        const uniq = new Set(rows.map(r => (r[ci] || "").trim().toLowerCase()));
-        if (uniq.size >= 2 && uniq.size <= 10) { filterCol = ci; break; }
-      }
-    }
-
-    if (filterCol === -1) return;
-
-    // Count values
-    const counts = {};
+    // Build month counts
+    const monthCounts = {};
     rows.forEach(r => {
-      const v = (r[filterCol] || "").trim();
-      if (v) counts[v] = (counts[v] || 0) + 1;
+      const m = getMonthFromDate(r[0]);
+      if (m) monthCounts[m] = (monthCounts[m] || 0) + 1;
     });
 
     // "All" chip
@@ -289,12 +395,24 @@ Ishita Das\tMeta\tResearch Scientist\tComputer Vision, PyTorch\tInterviewing\tRe
     allChip.addEventListener("click", () => { activeFilter = null; applyFilters(); });
     filterGroup.appendChild(allChip);
 
-    Object.keys(counts).sort().forEach(val => {
+    // Month chips in calendar order
+    const order = MONTH_NAMES;
+    order.forEach(m => {
+      if (!monthCounts[m]) return;
       const chip = document.createElement("button");
-      chip.className = "filter-chip" + (activeFilter && activeFilter.value === val ? " active" : "");
-      chip.innerHTML = `${escHtml(val)} <span class="chip-count">${counts[val]}</span>`;
+      chip.className = "filter-chip" + (activeFilter === m ? " active" : "");
+      const color = getMonthColor(m);
+
+      if (activeFilter === m) {
+        chip.style.background = color;
+        chip.style.borderColor = color;
+        chip.style.color = "#0a0a0f";
+        chip.style.boxShadow = `0 0 16px ${color}40`;
+      }
+
+      chip.innerHTML = `${m} <span class="chip-count">${monthCounts[m]}</span>`;
       chip.addEventListener("click", () => {
-        activeFilter = { colIndex: filterCol, value: val };
+        activeFilter = m;
         applyFilters();
       });
       filterGroup.appendChild(chip);
@@ -304,7 +422,9 @@ Ishita Das\tMeta\tResearch Scientist\tComputer Vision, PyTorch\tInterviewing\tRe
   // ---- Build Sort Options ----
   function buildSortOptions() {
     sortSelect.innerHTML = `<option value="">—</option>`;
-    headers.forEach((h, i) => {
+    const displayHeaders = ["Date", "Event Name", "Location", "Link"];
+    displayHeaders.forEach((h, i) => {
+      if (i === 3) return; // Don't sort by link
       const opt = document.createElement("option");
       opt.value = i;
       opt.textContent = h;
@@ -317,10 +437,10 @@ Ishita Das\tMeta\tResearch Scientist\tComputer Vision, PyTorch\tInterviewing\tRe
     const query = searchInput.value.trim().toLowerCase();
 
     filtered = rows.filter(row => {
-      // Filter
+      // Month filter
       if (activeFilter) {
-        const val = (row[activeFilter.colIndex] || "").trim();
-        if (val !== activeFilter.value) return false;
+        const m = getMonthFromDate(row[0]);
+        if (m !== activeFilter) return false;
       }
       // Search
       if (query) {
@@ -332,17 +452,20 @@ Ishita Das\tMeta\tResearch Scientist\tComputer Vision, PyTorch\tInterviewing\tRe
     // Sort
     if (sortCol >= 0) {
       filtered.sort((a, b) => {
+        if (sortCol === 0) {
+          // Date sort
+          const da = parseDateString(a[0]);
+          const db = parseDateString(b[0]);
+          if (da && db) return sortAsc ? da - db : db - da;
+        }
         const va = (a[sortCol] || "").toLowerCase();
         const vb = (b[sortCol] || "").toLowerCase();
-        // Try numeric
-        const na = parseFloat(va), nb = parseFloat(vb);
-        if (!isNaN(na) && !isNaN(nb)) return sortAsc ? na - nb : nb - na;
         return sortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
       });
     }
 
     render();
-    buildFilters(); // refresh active state
+    buildFilters();
   }
 
   // ---- Master Render ----
@@ -356,84 +479,41 @@ Ishita Das\tMeta\tResearch Scientist\tComputer Vision, PyTorch\tInterviewing\tRe
     }
     renderCards(filtered);
     renderTable(filtered);
-    rowCount.textContent = `${filtered.length} of ${rows.length} rows`;
+    rowCount.textContent = `${filtered.length} of ${rows.length} events`;
   }
 
-  // ---- Main Parse + Render ----
-  function processData() {
-    const result = parseInput(dataInput.value);
-    if (!result.headers.length) return;
-
-    headers = result.headers;
-    rows = result.rows;
-    sortCol = -1;
-    sortAsc = true;
-    activeFilter = null;
-    filtered = [...rows];
-
-    analyseColumns(headers, rows);
-    buildSortOptions();
-    buildFilters();
-
-    controlsBar.classList.remove("hidden");
-    dataOutput.classList.remove("hidden");
-    emptyState.classList.add("hidden");
-
-    // Collapse input & show Change Data button
-    inputArea.classList.add("collapsed");
-    btnChangeData.classList.remove("hidden");
-
-    render();
-    searchInput.focus();
-  }
-
-  // ---- Event Listeners ----
-
-  // Parse button
-  btnParse.addEventListener("click", processData);
-
-  // Also parse on Ctrl+Enter or Cmd+Enter
-  dataInput.addEventListener("keydown", e => {
-    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
-      e.preventDefault();
-      processData();
-    }
+  // Tab switching
+  tabBtns.forEach(btn => {
+    btn.addEventListener("click", () => {
+      if (btn.classList.contains("active")) return;
+      
+      // Update UI
+      tabBtns.forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      
+      // Update State
+      currentGid = btn.dataset.gid;
+      
+      // Reset filters and views
+      activeFilter = null;
+      searchInput.value = "";
+      
+      showLoading();
+      fetchSheetData(currentGid);
+    });
   });
 
-  // Auto-detect paste and render
-  dataInput.addEventListener("paste", () => {
-    setTimeout(() => {
-      if (dataInput.value.trim().split(/\r?\n/).length >= 2) {
-        processData();
-      }
-    }, 100);
-  });
+  // Refresh button
+  btnRefresh.addEventListener("click", () => fetchSheetData(currentGid));
 
-  // Clear
-  btnClear.addEventListener("click", () => {
-    dataInput.value = "";
-    headers = [];
-    rows = [];
-    filtered = [];
-    controlsBar.classList.add("hidden");
-    dataOutput.classList.add("hidden");
-    emptyState.classList.add("hidden");
-    filterGroup.innerHTML = "";
-    searchInput.value = "";
-
-    inputArea.classList.remove("collapsed");
-    btnChangeData.classList.add("hidden");
-    dataInput.focus();
-  });
-
-  // Sample
-  btnSample.addEventListener("click", () => {
-    dataInput.value = SAMPLE;
-    processData();
+  // Retry button
+  btnRetry.addEventListener("click", () => {
+    showLoading();
+    fetchSheetData(currentGid);
   });
 
   // Search
-  searchInput.addEventListener("input", debounce(applyFilters, 150));
+  searchInput.addEventListener("input", debounce(applyFilters, 200));
 
   // Sort select
   sortSelect.addEventListener("change", () => {
@@ -454,6 +534,7 @@ Ishita Das\tMeta\tResearch Scientist\tComputer Vision, PyTorch\tInterviewing\tRe
     const th = e.target.closest("th");
     if (!th) return;
     const ci = parseInt(th.dataset.col, 10);
+    if (ci === 3) return; // Don't sort by link
     if (sortCol === ci) {
       sortAsc = !sortAsc;
     } else {
@@ -463,14 +544,6 @@ Ishita Das\tMeta\tResearch Scientist\tComputer Vision, PyTorch\tInterviewing\tRe
     sortSelect.value = ci;
     sortDirBtn.textContent = sortAsc ? "↑" : "↓";
     applyFilters();
-  });
-
-  // Change Data button — re-open input area
-  btnChangeData.addEventListener("click", () => {
-    inputArea.classList.remove("collapsed");
-    dataInput.focus();
-    // Scroll to top so user sees the input
-    inputArea.scrollIntoView({ behavior: "smooth", block: "start" });
   });
 
   // View toggle
@@ -489,5 +562,17 @@ Ishita Das\tMeta\tResearch Scientist\tComputer Vision, PyTorch\tInterviewing\tRe
     let t;
     return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
   }
+
+  // ---- Auto-refresh ----
+  function startAutoRefresh() {
+    if (refreshTimer) clearInterval(refreshTimer);
+    refreshTimer = setInterval(() => {
+      fetchSheetData(currentGid);
+    }, REFRESH_INTERVAL_MS);
+  }
+
+  // ---- Init ----
+  showLoading();
+  fetchSheetData(currentGid).then(() => startAutoRefresh());
 
 })();
