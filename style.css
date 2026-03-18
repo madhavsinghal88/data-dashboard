@@ -1169,3 +1169,60 @@ body {
     -webkit-overflow-scrolling: touch;
   }
 }
+/* --- Insights Section --- */
+.insights-section {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  margin-bottom: 40px;
+  animation: fadeSlideUp 0.5s ease forwards;
+}
+
+.charts-row {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 24px;
+}
+
+@media (max-width: 900px) {
+  .charts-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.chart-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  box-shadow: var(--shadow-sm);
+  transition: var(--transition);
+}
+
+.chart-card:hover {
+  border-color: var(--border);
+  box-shadow: var(--shadow-glow);
+}
+
+.chart-header h3 {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.chart-header p {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.chart-body {
+  position: relative;
+  min-height: 250px;
+}
+
+.hidden {
+  display: none !important;
+}

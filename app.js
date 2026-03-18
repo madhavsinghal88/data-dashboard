@@ -9,7 +9,7 @@
   // ---- Configuration ----
   const SHEET_ID = "1ZqRy6ualEQZ9EN3tgNVE-Dx5ad2alD3KQkoqJ35cdCU";
   const REFRESH_INTERVAL_MS = 60_000; // 60 seconds
-  
+
   // ---- DOM refs ----
   const groupTabs = document.getElementById("groupTabs");
   const tabBtns = document.querySelectorAll(".tab-btn");
@@ -21,7 +21,7 @@
   const rowCount = document.getElementById("rowCount");
   const dataOutput = document.getElementById("dataOutput");
   const cardsGrid = document.getElementById("cardsGrid");
-  
+
   // Shortlist stuff
   const shortlistSection = document.getElementById("shortlistSection");
   const gridApplied = document.getElementById("gridApplied");
@@ -56,6 +56,7 @@
   let headers = [];
   let rows = [];
   let filtered = [];
+  let colMap = { date: 0, name: 1, location: 2, link: 3 };
   let sortCol = -2; // -2 = No Sort, -1 = Status, 0 = Date, etc.
   let sortAsc = true;
   let currentView = "cards";
@@ -127,7 +128,7 @@
     const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheet)}`;
 
     try {
-      const response = await fetch(url);
+      const response = await fetch(url, { cache: 'no-store' });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const text = await response.text();
 
@@ -135,21 +136,51 @@
       if (allRows.length < 2) throw new Error("Sheet appears empty");
 
       headers = allRows[0];
-      rows = allRows.slice(1);
+      
+      // Determine if the first row is actually data (like in the UK sheet)
+      const isFirstRowData = !headers.some(h => /name|date|location|link|status/i.test(h)) && parseDateString(headers[0]) !== null;
+      if (isFirstRowData) {
+        rows = allRows;
+        headers = ["Date", "Event Name", "Location", "Link"]; // Default headers
+      } else {
+        rows = allRows.slice(1);
+      }
 
-      // Deduplicate rows based on Event Name + Date + Location
+      // Map columns
+      colMap = { date: 0, name: 1, location: 2, link: 3 };
+      if (!isFirstRowData) {
+        const hLower = headers.map(h => (h || "").toLowerCase());
+        const dIdx = hLower.findIndex(h => h.includes("date"));
+        const nIdx = hLower.findIndex(h => h.includes("name") || h.includes("event"));
+        let locIdx = hLower.findIndex(h => h.includes("location"));
+        let linkIdx = hLower.findIndex(h => h.includes("link") || h.includes("url"));
+        
+        if (dIdx !== -1) colMap.date = dIdx;
+        if (nIdx !== -1) colMap.name = nIdx;
+        if (locIdx !== -1) colMap.location = locIdx;
+        else if (hLower.length >= 3) colMap.location = hLower.length - 2; // fallback
+        if (linkIdx !== -1) colMap.link = linkIdx;
+        else if (hLower.length >= 4) colMap.link = hLower.length - 1; // fallback
+      }
+
+      // Deduplicate rows based on Event Name + Date + Location + Link
       const seen = new Set();
       rows = rows.filter(row => {
-        const key = `${(row[0]||"").trim()}|${(row[1]||"").trim()}|${(row[2]||"").trim()}`;
+        const dateStr = (row[colMap.date] || "").trim();
+        // Ignore scraper run headers entirely
+        if (dateStr.includes("Scraper run:")) return false;
+
+        const key = `${(row[colMap.name] || "").trim()}|${dateStr}|${(row[colMap.location] || "").trim()}|${(row[colMap.link] || "").trim()}`;
         if (seen.has(key)) return false;
         seen.add(key);
         return true;
       });
 
       // Normalize row lengths
+      const maxLen = Math.max(headers.length, Math.max(...rows.map(r => r.length)));
       rows = rows.map(r => {
-        while (r.length < headers.length) r.push("");
-        return r.slice(0, headers.length);
+        while (r.length < maxLen) r.push("");
+        return r.slice(0, maxLen);
       });
 
       sortCol = -1;
@@ -245,8 +276,8 @@
     const monthsSet = new Set();
 
     rows.forEach(row => {
-      const dateStr = (row[0] || "").trim();
-      const location = (row[2] || "").trim();
+      const dateStr = (row[colMap.date] || "").trim();
+      const location = (row[colMap.location] || "").trim();
       const parsedDate = parseDateString(dateStr);
 
       if (parsedDate && parsedDate >= now) upcoming++;
@@ -326,10 +357,10 @@
 
   function createCardElement(row, ri, isShortlist = false) {
     const card = document.createElement("div");
-    const date = (row[0] || "").trim();
-    const eventName = (row[1] || "").trim();
-    const location = (row[2] || "").trim();
-    const link = (row[3] || "").trim();
+    const date = (row[colMap.date] || "").trim();
+    const eventName = (row[colMap.name] || "").trim();
+    const location = (row[colMap.location] || "").trim();
+    const link = (row[colMap.link] || "").trim();
     const rowId = `${eventName}|${date}|${location}`;
     const status = eventStatus[rowId] || "none";
 
@@ -390,15 +421,16 @@
       let cls = "";
       if (i < 4 && i - 1 === sortCol) cls = sortAsc ? "sorted-asc" : "sorted-desc";
       const sortVal = i - 1;
-      return `<th class="${cls}" data-col="${sortVal}">${escHtml(h)}${i < 4 ? '' : ''}</th>`;
+      return `<th class="${cls}" data-col="${sortVal}">${escHtml(h)}</th>`;
     }).join("")}</tr>`;
 
     tableBody.innerHTML = "";
     const frag = document.createDocumentFragment();
     data.forEach((row, ri) => {
-      const date = (row[0] || "").trim();
-      const eventName = (row[1] || "").trim();
-      const location = (row[2] || "").trim();
+      const date = (row[colMap.date] || "").trim();
+      const eventName = (row[colMap.name] || "").trim();
+      const location = (row[colMap.location] || "").trim();
+      const link = (row[colMap.link] || "").trim();
       const rowId = `${eventName}|${date}|${location}`;
       const status = eventStatus[rowId] || "none";
 
@@ -413,16 +445,12 @@
             <div class="status-opt ${status === 'tobe' ? 'active' : ''}" data-status="tobe">T</div>
             <div class="status-opt ${status === 'none' ? 'active' : ''}" data-status="none">N</div>
            </div>
-         </td>`
+         </td>`,
+        `<td>${escHtml(date || "—")}</td>`,
+        `<td>${escHtml(eventName || "—")}</td>`,
+        `<td>${escHtml(location || "—")}</td>`,
+        `<td>${link ? `<a href="${escHtml(link)}" target="_blank" rel="noopener">View →</a>` : "—"}</td>`
       ];
-
-      row.forEach((cell, ci) => {
-        if (ci === 3 && cell) {
-          cells.push(`<td><a href="${escHtml(cell)}" target="_blank" rel="noopener">View →</a></td>`);
-        } else {
-          cells.push(`<td>${escHtml(cell || "—")}</td>`);
-        }
-      });
 
       tr.innerHTML = cells.join("");
 
@@ -438,10 +466,10 @@
   // ---- Status Management ----
   function setStatus(id, rowData, status) {
     eventStatus[id] = status;
-    
+
     // Save to localStorage
     localStorage.setItem("eventStatus", JSON.stringify(eventStatus));
-    
+
     if (status !== "none") {
       saveRowData(id, rowData);
     } else {
@@ -449,8 +477,8 @@
       localStorage.setItem("eventStatus", JSON.stringify(eventStatus));
       removeRowData(id);
     }
-    
-    render(); 
+
+    render();
     updateShortlist();
   }
 
@@ -468,20 +496,20 @@
 
   function updateShortlist() {
     const dataMap = JSON.parse(localStorage.getItem("shortlistDataMap") || "{}");
-    
+
     const applied = [];
     const tobe = [];
-    
+
     Object.keys(eventStatus).forEach(id => {
       const s = eventStatus[id];
       if (s === "applied") applied.push(id);
       if (s === "tobe") tobe.push(id);
     });
-    
+
     shortlistSection.classList.remove("hidden");
     countApplied.textContent = applied.length;
     countToBeApplied.textContent = tobe.length;
-    
+
     // Render Applied
     gridApplied.innerHTML = "";
     if (applied.length === 0) {
@@ -524,7 +552,7 @@
     // Build month counts
     const monthCounts = {};
     rows.forEach(r => {
-      const m = getMonthFromDate(r[0]);
+      const m = getMonthFromDate(r[colMap.date]);
       if (m) monthCounts[m] = (monthCounts[m] || 0) + 1;
     });
 
@@ -578,7 +606,7 @@
     filtered = rows.filter(row => {
       // Month filter
       if (activeFilter) {
-        const m = getMonthFromDate(row[0]);
+        const m = getMonthFromDate(row[colMap.date]);
         if (m !== activeFilter) return false;
       }
       // Search
@@ -594,24 +622,25 @@
       filtered.sort((a, b) => {
         if (sortCol === -1) {
           // Status sort
-          const idA = `${a[1]}|${a[0]}|${a[2]}`;
-          const idB = `${b[1]}|${b[0]}|${b[2]}`;
+          const idA = `${(a[colMap.name]||"").trim()}|${(a[colMap.date]||"").trim()}|${(a[colMap.location]||"").trim()}`;
+          const idB = `${(b[colMap.name]||"").trim()}|${(b[colMap.date]||"").trim()}|${(b[colMap.location]||"").trim()}`;
           const sa = statusOrder[eventStatus[idA] || "none"];
           const sb = statusOrder[eventStatus[idB] || "none"];
           if (sa !== sb) return sortAsc ? sa - sb : sb - sa;
           // Fallback to date
-          const da = parseDateString(a[0]);
-          const db = parseDateString(b[0]);
+          const da = parseDateString(a[colMap.date]);
+          const db = parseDateString(b[colMap.date]);
           return (da || 0) - (db || 0);
         }
         if (sortCol === 0) {
           // Date sort
-          const da = parseDateString(a[0]);
-          const db = parseDateString(b[0]);
+          const da = parseDateString(a[colMap.date]);
+          const db = parseDateString(b[colMap.date]);
           if (da && db) return sortAsc ? da - db : db - da;
         }
-        const va = (a[sortCol] || "").toLowerCase();
-        const vb = (b[sortCol] || "").toLowerCase();
+        const colIdx = sortCol === 0 ? colMap.date : (sortCol === 1 ? colMap.name : colMap.location);
+        const va = (a[colIdx] || "").toLowerCase();
+        const vb = (b[colIdx] || "").toLowerCase();
         return sortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
       });
     }
@@ -638,18 +667,18 @@
   tabBtns.forEach(btn => {
     btn.addEventListener("click", () => {
       if (btn.classList.contains("active")) return;
-      
+
       // Update UI
       tabBtns.forEach(b => b.classList.remove("active"));
       btn.classList.add("active");
-      
+
       // Update State
       currentSheet = btn.dataset.sheet;
-      
+
       // Reset filters and views
       activeFilter = null;
       searchInput.value = "";
-      
+
       showLoading();
       fetchSheetData(currentSheet);
     });

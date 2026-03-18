@@ -43,6 +43,8 @@
                 <nav class="group-tabs" id="groupTabs">
                     <button class="tab-btn active" data-sheet="inperson">In-Person</button>
                     <button class="tab-btn" data-sheet="virtual events">Virtual Events</button>
+                    <button class="tab-btn" data-sheet="Final Events">Final Events</button>
+                    <button class="tab-btn" data-sheet="UK">UK</button>
                 </nav>
                 <div class="header-actions">
                     <div class="sync-indicator" id="syncIndicator">
@@ -99,7 +101,8 @@
                 <path d="M18 18l12 12M30 18l-12 12" stroke="#ef4444" stroke-width="2.5" stroke-linecap="round" />
             </svg>
             <p class="error-title">Unable to load data</p>
-            <p class="error-message" id="errorMessage">Check that the Google Sheet is published / publicly accessible.</p>
+            <p class="error-message" id="errorMessage">Check that the Google Sheet is published / publicly accessible.
+            </p>
             <button class="btn-primary" id="btnRetry">
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
                     <path d="M14 8A6 6 0 1 1 8 2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
@@ -209,11 +212,14 @@
 
         <!-- Footer -->
         <footer class="dashboard-footer hidden" id="dashboardFooter">
-            <p>Data sourced from <a href="https://docs.google.com/spreadsheets/d/1ZqRy6ualEQZ9EN3tgNVE-Dx5ad2alD3KQkoqJ35cdCU/edit?gid=1915111100#gid=1915111100" target="_blank" rel="noopener">Google Sheets</a> &middot; Last sync: <span id="lastSync">—</span></p>
+            <p>Data sourced from <a
+                    href="https://docs.google.com/spreadsheets/d/1ZqRy6ualEQZ9EN3tgNVE-Dx5ad2alD3KQkoqJ35cdCU/edit?gid=1915111100#gid=1915111100"
+                    target="_blank" rel="noopener">Google Sheets</a> &middot; Last sync: <span id="lastSync">—</span>
+            </p>
         </footer>
     </section>
 
-    <script src="app.js"></script>
+    <script src="app.js?v=2"></script>
 </body>
 
 </html>
