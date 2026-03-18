@@ -133,22 +133,29 @@
       const text = await response.text();
 
       const allRows = parseCSV(text);
-      if (allRows.length < 2) throw new Error("Sheet appears empty");
-
-      headers = allRows[0];
       
-      // Determine if the first row is actually data (like in the UK sheet)
-      const isFirstRowData = !headers.some(h => /name|date|location|link|status/i.test(h)) && parseDateString(headers[0]) !== null;
-      if (isFirstRowData) {
-        rows = allRows;
-        headers = ["Date", "Event Name", "Location", "Link"]; // Default headers
+      let isFirstRowData = false;
+      if (allRows.length === 0 || (allRows.length === 1 && (!allRows[0] || allRows[0].length === 0 || allRows[0].join("").trim() === ""))) {
+         headers = ["Date", "Event Name", "Location", "Link"];
+         rows = [];
+      } else if (allRows.length === 1) {
+         headers = allRows[0];
+         rows = [];
       } else {
-        rows = allRows.slice(1);
+        headers = allRows[0];
+        // Determine if the first row is actually data (like in the UK sheet)
+        isFirstRowData = !headers.some(h => /name|date|location|link|status/i.test(h)) && parseDateString(headers[0]) !== null;
+        if (isFirstRowData) {
+          rows = allRows;
+          headers = ["Date", "Event Name", "Location", "Link"];
+        } else {
+          rows = allRows.slice(1);
+        }
       }
 
       // Map columns
       colMap = { date: 0, name: 1, location: 2, link: 3 };
-      if (!isFirstRowData) {
+      if (!isFirstRowData && headers.length > 0) {
         const hLower = headers.map(h => (h || "").toLowerCase());
         const dIdx = hLower.findIndex(h => h.includes("date"));
         const nIdx = hLower.findIndex(h => h.includes("name") || h.includes("event"));
